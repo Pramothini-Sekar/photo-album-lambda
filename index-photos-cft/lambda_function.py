@@ -76,6 +76,8 @@ def lambda_handler(event, context):
     labels = extract_labels(bucket_key, bucket_name)
 
     is_es_post_request_success = send_es_post_request(bucket_key, bucket_name, labels)
+    print("is_es_post_request_success ", is_es_post_request_success)
+    
     if not(is_es_post_request_success):
         return
         {
