@@ -1,0 +1,412 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+# Add GitHub details here
+Parameters:
+  S3GHRepo:
+    Type: String
+    Default: "photo-album"
+
+  GHUser:
+    Type: String
+    Default: "Pramothini-Sekar"
+
+  GHBranch:
+    Type: String
+    Default: "main"
+
+  GHToken:
+    Type: String
+    Default: ""
+
+  LFGHRepo:
+    Type: String
+    Default: "VoicePhotoLambda"
+
+  Apiname:
+    Type: String
+    Default: "AI Photo Search"
+    
+  ApiGatewayHTTPMethod:
+    Type: String
+    Default: GET
+        
+  ApiGatewayHTTPMethod1: 
+    Type: String
+    Default: PUT
+        
+  SearchLambdaARN:
+    Type: String
+    Default: "arn:aws:lambda:us-east-1:914919466727:function:search-photos"
+        
+  RootResourceId:
+    Type: String
+    Default: "arn:aws:s3:::photo-album-storage"
+        
+  IndexLambdaARN:
+    Type: String
+    Default: "arn:aws:lambda:us-east-1:914919466727:function:index-photos"
+        
+  ApiGatewayStageName:
+    Type: String
+    AllowedPattern: "[a-z0-9]+"
+    Default: dev
+
+Resources:
+  AdminRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - cloudformation.amazonaws.com
+                - codepipeline.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      Policies:
+        - PolicyName: admin
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: "*"
+                Resource: "*"
+  
+  ArtifactS3:
+    Type: "AWS::S3::Bucket"
+
+  FrontendS3:
+    Type: "AWS::S3::Bucket"
+
+  # Describing pipeline for Lambda
+  PipelineLF:
+    Type: "AWS::CodePipeline::Pipeline"
+    Properties:
+      RoleArn: !GetAtt AdminRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactS3
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: "1"
+              RunOrder: 1
+              Configuration:
+                Repo: !Ref LFGHRepo
+                Owner: !Ref GHUser
+                Branch: !Ref GHBranch
+                OAuthToken: !Ref GHToken
+                PollForSourceChanges: "true"
+              OutputArtifacts:
+                - Name: SourceArtifact
+              InputArtifacts: []
+              Region: "us-east-1"
+              Namespace: SourceVariables
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              RunOrder: 2
+              Configuration:
+                ProjectName: "lambdaBuildProject" 
+                #has to be same name as the existing lambda codebuild
+              OutputArtifacts:
+                - Name: BuildArtifact
+              InputArtifacts:
+                - Name: SourceArtifact
+              Region: "us-east-1"
+              Namespace: BuildVariables
+        - Name: Deploy
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: "1"
+              RunOrder: 3
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                Capabilities: CAPABILITY_IAM,CAPABILITY_AUTO_EXPAND
+                ChangeSetName: "CFlambda-changeset"
+                RoleArn: !GetAtt AdminRole.Arn
+                StackName: "lambda-stack-cf"
+                TemplatePath: BuildArtifact::outputsamtemplate.yml
+              OutputArtifacts: []
+              InputArtifacts:
+                - Name: BuildArtifact
+              Region: us-east-1
+              Namespace: DeployVariables
+
+  # Describing frontend S3 pipeline
+  PipelineS3:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore: 
+        Location: !Ref ArtifactS3
+        Type: S3
+      RoleArn: !GetAtt AdminRole.Arn
+      Stages:
+        - Name: Source
+          Actions: 
+            - Name: Source
+              ActionTypeId: 
+                Category: Source
+                Owner: ThirdParty
+                Version: 1
+                Provider: GitHub
+              Configuration:
+                Repo: !Ref S3GHRepo
+                Owner: !Ref GHUser
+                Branch: !Ref GHBranch
+                OAuthToken: !Ref GHToken
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1 
+
+        - Name: Deploy
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: S3
+              Configuration:
+                BucketName: !Ref FrontendS3
+                Extract: true
+              InputArtifacts:
+                - Name: SourceArtifact
+              RunOrder: 1
+
+  OS:
+    Type: AWS::OpenSearchService::Domain
+    Properties: 
+      AccessPolicies:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              AWS: "914919466727"
+            Action: "es:*"
+            #HAS TO BE NEW NAME (dont use existing opensearch)
+            Resource: "arn:aws:es:us-east-1:914919466727:domain/cfphotoalbum3/*" 
+      ClusterConfig:
+        DedicatedMasterEnabled: "false"
+        InstanceCount: "1"
+        ZoneAwarenessEnabled: "false" 
+        InstanceType: t3.small.search
+      DomainName: "cfphotoalbum3" #NEW OPEN SEARCH NAME
+      EBSOptions: 
+        EBSEnabled: true
+        Iops: 0
+        VolumeSize: 10
+        VolumeType: "gp2"
+      EngineVersion: OpenSearch_1.0
+
+  Bucket1:
+    Type: AWS::S3::Bucket
+    Description: Creating Amazon S3 bucket from CloudFormation to store images that users upload
+    Properties:
+      BucketName: cf2-store-photos-s3
+      AccessControl: PublicReadWrite
+      NotificationConfiguration: 
+          LambdaConfigurations:
+              - Event: 's3:ObjectCreated:Put'
+                Function: 'arn:aws:lambda:us-east-1:914919466727:function:index-photos'
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - GET
+              - POST
+              - PUT
+              - HEAD
+            AllowedOrigins:
+              - '*'
+      PublicAccessBlockConfiguration: 
+          BlockPublicAcls: "false"
+          BlockPublicPolicy: "false"
+          IgnorePublicAcls: "false"
+          RestrictPublicBuckets: "false"
+
+  Rekognition:
+    Type: AWS::Rekognition::Project
+    Properties: 
+      ProjectName: cf-rekognition
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Description: Voice Enabled Photo Search application, built during the Cloud and Big Data course at NYU.
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Name: !Ref Apiname
+      
+  ApiGatewayResourceMethod:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt 
+      - ApiGateway
+      - RootResourceId
+      PathPart: search
+
+  ApiGatewayRootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: !Ref ApiGatewayHTTPMethod
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters: 
+            method.response.header.Access-Control-Allow-Origin: true
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !Ref SearchLambdaARN
+      ResourceId: !Ref ApiGatewayResourceMethod
+      RestApiId: !Ref ApiGateway
+
+  OptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId:
+        Ref: ApiGateway
+      ResourceId:
+        Ref: ApiGatewayResourceMethod
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'GET,POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+          ResponseTemplates:
+            application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+      - StatusCode: 200
+        ResponseModels:
+          application/json: 'Empty'
+        ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+
+  ApiGatewayResourceMethod1:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt 
+      - ApiGateway
+      - RootResourceId
+      PathPart: upload
+      
+  ApiGatewayRootMethod1:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: !Ref ApiGatewayHTTPMethod1
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters: 
+            method.response.header.Access-Control-Allow-Origin: true
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !Ref IndexLambdaARN
+      ResourceId: !Ref ApiGatewayResourceMethod1
+      RestApiId: !Ref ApiGateway     
+
+  OptionsMethod1:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId:
+        Ref: ApiGateway
+      ResourceId:
+        Ref: ApiGatewayResourceMethod1
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'PUT,GET,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+          ResponseTemplates:
+            application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+      - StatusCode: 200
+        ResponseModels:
+          application/json: 'Empty'
+        ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - OptionsMethod
+      - OptionsMethod1
+      - ApiGatewayRootMethod
+      - ApiGatewayRootMethod1
+    Properties:
+      RestApiId: !Ref ApiGateway
+      StageName: !Ref ApiGatewayStageName  
+      
+  ApiUsagePlan:
+    Type: "AWS::ApiGateway::UsagePlan"
+    Properties:
+      ApiStages: 
+      - ApiId: !Ref ApiGateway
+        Stage: !Ref ApiGatewayStageName      
+      Description: !Join [" ", [{"Ref": "AWS::StackName"}, "usage plan"]]
+      UsagePlanName: !Join ["", [{"Ref": "AWS::StackName"}, "-usage-plan"]]
+
+  ApiUsagePlanKey:
+    Type: "AWS::ApiGateway::UsagePlanKey"
+    Properties:
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref ApiUsagePlan 
+
+  ApiKey:
+    Type: 'AWS::ApiGateway::ApiKey' 
+    Properties:
+      Name: cloudformation-key-frontend
+      Description: API key for the frontend to access the API
+      Enabled: 'true'
+      StageKeys:
+        - RestApiId: !Ref ApiGateway
+          StageName: !Ref ApiGatewayStageName
