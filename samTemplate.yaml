@@ -16,17 +16,3 @@ Resources:
       Environment:
         Variables:
           REGION: us-east-1
-  searchphotos:
-    Type: "AWS::Serverless::Function"
-    Properties:
-      FunctionName: search-photos-cft
-      Handler: lambda_function.lambda_handler
-      Runtime: python3.7
-      CodeUri: ./search-photos-cft
-      Description: "Lambda function for Searching Photos"
-      MemorySize: 256
-      Timeout: 30
-      Role: "arn:aws:iam::914919466727:role/service-role/lf1-role-3eyhwpbk"
-      Environment:
-        Variables:
-          REGION: us-east-1
