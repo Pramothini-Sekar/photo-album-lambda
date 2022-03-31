@@ -126,7 +126,7 @@
       "Properties": {
         "DomainName": "functional-elastic-search",
         "ElasticsearchClusterConfig": {
-          "InstanceType": "m3.medium.elasticsearch"
+          "InstanceType": "t3.small.search"
         }
       }
     }
